@@ -12,7 +12,7 @@ app.get('/', (req, res) => {
   res.send('LocalLawnPro Backend is Live!');
 });
 
-// Optional: log every request so we can see what’s happening in Render logs
+// Optional: log every request so we can see what's happening in Render logs
 app.use((req, res, next) => {
   console.log(`[${new Date().toISOString()}] ${req.method} ${req.path}`);
   next();
@@ -25,7 +25,7 @@ app.post('/create-payment-intent', async (req, res) => {
     console.log('Request body:', JSON.stringify(req.body, null, 2));
     console.log('Timestamp:', new Date().toISOString());
 
-    // 🔴 IMPORTANT: iOS sends `amount_cents`
+    // IMPORTANT: iOS sends *amount_cents*
     const amount = req.body.amount_cents;
     const description = req.body.description || 'Lawn care service';
     const metadata = req.body.metadata || {};
@@ -40,7 +40,7 @@ app.post('/create-payment-intent', async (req, res) => {
     console.log('Creating PaymentIntent with amount:', amount);
 
     const paymentIntent = await stripe.paymentIntents.create({
-      amount: amount,          // already in cents
+      amount: amount, // already in cents
       currency: 'usd',
       description,
       metadata,
@@ -50,18 +50,17 @@ app.post('/create-payment-intent', async (req, res) => {
     });
 
     console.log('PaymentIntent created:', paymentIntent.id);
-    console.log('=====================================\n');
+    console.log('====================================\n');
 
-    // iOS expects `clientSecret` (and we also send the id)
     res.json({
       clientSecret: paymentIntent.client_secret,
       paymentIntentId: paymentIntent.id,
     });
+
   } catch (err) {
     console.error('=== PAYMENT INTENT ERROR ===');
     console.error(err);
     console.error('============================\n');
-
     res.status(500).json({ error: err.message });
   }
 });
