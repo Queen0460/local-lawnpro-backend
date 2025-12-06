@@ -1,4 +1,3 @@
-
 const express = require('express');
 const app = express();
 const stripe = require('stripe')(process.env.STRIPE_SECRET_KEY);
@@ -8,24 +7,63 @@ require('dotenv').config();
 app.use(cors());
 app.use(express.json());
 
+// Simple health check
 app.get('/', (req, res) => {
-    res.send('LocalLawnPro Backend is Live!');
+  res.send('LocalLawnPro Backend is Live!');
 });
 
+// Optional: log every request so we can see what’s happening in Render logs
+app.use((req, res, next) => {
+  console.log(`[${new Date().toISOString()}] ${req.method} ${req.path}`);
+  next();
+});
+
+// CREATE PAYMENT INTENT
 app.post('/create-payment-intent', async (req, res) => {
-    const { amount } = req.body;
+  try {
+    console.log('=== CREATE PAYMENT INTENT REQUEST ===');
+    console.log('Request body:', JSON.stringify(req.body, null, 2));
+    console.log('Timestamp:', new Date().toISOString());
 
-    try {
-        const paymentIntent = await stripe.paymentIntents.create({
-            amount,
-            currency: 'usd',
-            automatic_payment_methods: { enabled: true },
-        });
+    // 🔴 IMPORTANT: iOS sends `amount_cents`
+    const amount = req.body.amount_cents;
+    const description = req.body.description || 'Lawn care service';
+    const metadata = req.body.metadata || {};
 
-        res.send({ clientSecret: paymentIntent.client_secret });
-    } catch (err) {
-        res.status(500).send({ error: err.message });
+    if (!amount || amount <= 0) {
+      console.error('Invalid amount_cents:', amount);
+      return res.status(400).json({
+        error: 'Invalid amount_cents. Must be a positive number.',
+      });
     }
+
+    console.log('Creating PaymentIntent with amount:', amount);
+
+    const paymentIntent = await stripe.paymentIntents.create({
+      amount: amount,          // already in cents
+      currency: 'usd',
+      description,
+      metadata,
+      automatic_payment_methods: {
+        enabled: true,
+      },
+    });
+
+    console.log('PaymentIntent created:', paymentIntent.id);
+    console.log('=====================================\n');
+
+    // iOS expects `clientSecret` (and we also send the id)
+    res.json({
+      clientSecret: paymentIntent.client_secret,
+      paymentIntentId: paymentIntent.id,
+    });
+  } catch (err) {
+    console.error('=== PAYMENT INTENT ERROR ===');
+    console.error(err);
+    console.error('============================\n');
+
+    res.status(500).json({ error: err.message });
+  }
 });
 
 const PORT = process.env.PORT || 5000;
