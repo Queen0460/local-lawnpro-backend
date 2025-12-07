@@ -12,13 +12,38 @@ app.get('/', (req, res) => {
   res.send('LocalLawnPro Backend is Live!');
 });
 
-// Optional: log every request so we can see what's happening in Render logs
+// Log every request so we can see what's happening in Render logs
 app.use((req, res, next) => {
   console.log(`[${new Date().toISOString()}] ${req.method} ${req.path}`);
   next();
 });
 
-// CREATE PAYMENT INTENT
+// ===== NEW: CREATE CUSTOMER =====
+app.post('/create-customer', async (req, res) => {
+  try {
+    console.log('=== CREATE CUSTOMER REQUEST ===');
+    console.log('Body:', JSON.stringify(req.body, null, 2));
+
+    const { name, email } = req.body;
+
+    const customer = await stripe.customers.create({
+      name: name || 'LocalLawnPro Customer',
+      email: email || undefined,
+    });
+
+    console.log('Customer created:', customer.id);
+
+    res.json({
+      customerId: customer.id,
+    });
+  } catch (err) {
+    console.error('=== CREATE CUSTOMER ERROR ===');
+    console.error(err);
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// ===== CREATE PAYMENT INTENT =====
 app.post('/create-payment-intent', async (req, res) => {
   try {
     console.log('=== CREATE PAYMENT INTENT REQUEST ===');
@@ -67,3 +92,4 @@ app.post('/create-payment-intent', async (req, res) => {
 
 const PORT = process.env.PORT || 5000;
 app.listen(PORT, () => console.log(`Server running on port ${PORT}`));
+ning on port ${PORT}`));
