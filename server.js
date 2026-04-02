@@ -33,23 +33,16 @@ app.post("/create-payment-intent", async (req, res) => {
 
         const { description, metadata } = req.body;
 
-        // Accept basePrice (dollars) or legacy amount_cents — basePrice takes priority
-        let basePrice = req.body.basePrice;
-        if (!basePrice && req.body.amount_cents) {
-            basePrice = req.body.amount_cents / 100;
-            console.log("[/create-payment-intent] legacy amount_cents received, converted to basePrice:", basePrice);
-        }
+        const basePrice = req.body.basePrice;
 
         if (!basePrice || isNaN(parseFloat(basePrice))) {
             return res.status(400).json({ error: 'basePrice (in dollars) is required' });
         }
 
         const base = parseFloat(basePrice);
-        const fee = parseFloat((base * 0.10).toFixed(2));
-        const total = parseFloat((base + fee).toFixed(2));
-        const totalCents = Math.round(total * 100);
+        const amount_cents = Math.round(base * 100);
 
-        console.log(`[/create-payment-intent] base: $${base} | fee: $${fee} | total: $${total} | totalCents: ${totalCents}`);
+        console.log(`[/create-payment-intent] basePrice: $${base} | amount_cents: ${amount_cents}`);
 
         // Stripe metadata values must be strings; sanitize before sending
         const safeMetadata = {};
@@ -60,22 +53,23 @@ app.post("/create-payment-intent", async (req, res) => {
         }
 
         const paymentIntent = await stripe.paymentIntents.create({
-            amount: totalCents,
+            amount: amount_cents,
             currency: 'usd',
             description: description || undefined,
             metadata: {
                 ...safeMetadata,
-                basePrice: String(base),
-                fee: String(fee),
-                total: String(total)
+                basePrice: String(base)
             },
             automatic_payment_methods: { enabled: true }
         });
 
-        console.log(`[/create-payment-intent] success — intent: ${paymentIntent.id} amount: ${totalCents} cents`);
+        console.log(`[/create-payment-intent] success — intent: ${paymentIntent.id} amount: ${amount_cents} cents`);
         res.json({
             clientSecret: paymentIntent.client_secret,
-            pricing: { base, fee, total }
+            paymentIntentId: paymentIntent.id,
+            servicePrice: base,
+            platformFee: 0,
+            totalAmount: base
         });
     } catch (err) {
         console.error("[/create-payment-intent] Stripe error:", err.message);
