@@ -7,10 +7,10 @@ const cors = require("cors");
 
 // Verify Stripe key is loaded before initializing
 if (!process.env.STRIPE_SECRET_KEY) {
-    console.error("❌ FATAL: STRIPE_SECRET_KEY is not set in environment variables");
+    console.error("FATAL: STRIPE_SECRET_KEY is not set in environment variables");
     process.exit(1);
 }
-console.log(`✅ Stripe key loaded: ${process.env.STRIPE_SECRET_KEY.slice(0, 14)}...`);
+console.log(`Stripe key loaded: ${process.env.STRIPE_SECRET_KEY.slice(0, 14)}...`);
 
 const stripe = require("stripe")(process.env.STRIPE_SECRET_KEY);
 
@@ -18,7 +18,7 @@ const stripe = require("stripe")(process.env.STRIPE_SECRET_KEY);
 app.use(cors());
 app.use(express.json());
 
-// Pricing helper — basePrice in dollars, returns breakdown
+// Pricing helper
 function calculatePricing(basePrice) {
     const base = parseFloat(basePrice);
     const fee = parseFloat((base * 0.10).toFixed(2));
@@ -26,13 +26,12 @@ function calculatePricing(basePrice) {
     return { base, fee, total, totalCents: Math.round(total * 100) };
 }
 
-// Create a PaymentIntent — backend recalculates amount from basePrice + 10% fee
+// Create a PaymentIntent — charges basePrice + 10% platform fee
 app.post("/create-payment-intent", async (req, res) => {
     try {
         console.log("[/create-payment-intent] incoming body:", JSON.stringify(req.body));
 
         const { description, metadata } = req.body;
-
         const basePrice = req.body.basePrice;
 
         if (!basePrice || isNaN(parseFloat(basePrice))) {
@@ -40,11 +39,12 @@ app.post("/create-payment-intent", async (req, res) => {
         }
 
         const base = parseFloat(basePrice);
-        const amount_cents = Math.round(base * 100);
+        const platformFee = parseFloat((base * 0.10).toFixed(2));
+        const total = parseFloat((base + platformFee).toFixed(2));
+        const amount_cents = Math.round(total * 100);
 
-        console.log(`[/create-payment-intent] basePrice: $${base} | amount_cents: ${amount_cents}`);
+        console.log(`[/create-payment-intent] basePrice: $${base} | platformFee: $${platformFee} | total: $${total} | amount_cents: ${amount_cents}`);
 
-        // Stripe metadata values must be strings; sanitize before sending
         const safeMetadata = {};
         if (metadata && typeof metadata === 'object') {
             for (const [k, v] of Object.entries(metadata)) {
@@ -58,7 +58,9 @@ app.post("/create-payment-intent", async (req, res) => {
             description: description || undefined,
             metadata: {
                 ...safeMetadata,
-                basePrice: String(base)
+                basePrice: String(base),
+                platformFee: String(platformFee),
+                total: String(total)
             },
             automatic_payment_methods: { enabled: true }
         });
@@ -68,8 +70,8 @@ app.post("/create-payment-intent", async (req, res) => {
             clientSecret: paymentIntent.client_secret,
             paymentIntentId: paymentIntent.id,
             servicePrice: base,
-            platformFee: 0,
-            totalAmount: base
+            platformFee: platformFee,
+            totalAmount: total
         });
     } catch (err) {
         console.error("[/create-payment-intent] Stripe error:", err.message);
@@ -87,19 +89,19 @@ app.post("/create-payment-intent", async (req, res) => {
 app.post("/confirm-payment-status", async (req, res) => {
     try {
         const { paymentIntentId } = req.body;
-        
+
         if (!paymentIntentId) {
             return res.status(400).json({ error: 'paymentIntentId is required' });
         }
-        
+
         const paymentIntent = await stripe.paymentIntents.retrieve(paymentIntentId);
-        
+
         if (paymentIntent.status === 'succeeded') {
             return res.json({ status: 'succeeded' });
         } else {
-            return res.status(400).json({ 
-                status: paymentIntent.status, 
-                message: 'Payment not completed' 
+            return res.status(400).json({
+                status: paymentIntent.status,
+                message: 'Payment not completed'
             });
         }
     } catch (err) {
@@ -113,13 +115,12 @@ let jobs = [];
 
 // POST /jobs — customer posts a job
 // NOTE: fee and totalPrice are always calculated server-side from basePrice.
-// Any 'price' or 'total' fields sent by the client are intentionally ignored.
 app.post("/jobs", (req, res) => {
     try {
         const {
             title,
             serviceType,
-            basePrice,   // pre-fee service price in dollars — only trusted pricing input
+            basePrice,
             address,
             coordinate,
             customerId,
@@ -134,12 +135,10 @@ app.post("/jobs", (req, res) => {
             return res.status(400).json({ error: 'basePrice (in dollars) is required' });
         }
 
-        // Validate address
         if (!address || typeof address !== 'string' || address.trim().length === 0) {
             return res.status(400).json({ error: 'A valid address string is required' });
         }
 
-        // Validate coordinate
         const lat = coordinate && parseFloat(coordinate.lat);
         const lng = coordinate && parseFloat(coordinate.lng);
         if (
@@ -185,7 +184,7 @@ const ALLOWED_STATUSES = ['accepted', 'arrived', 'completed', 'paid'];
 app.patch("/jobs/:id/status", (req, res) => {
     try {
         const { id } = req.params;
-        const { status } = req.body;
+        const { status, workerId } = req.body;
 
         if (!status) {
             return res.status(400).json({ error: 'status is required' });
@@ -203,7 +202,10 @@ app.patch("/jobs/:id/status", (req, res) => {
         }
 
         job.status = status;
-        console.log(`Job ${id} status updated to '${status}'`);
+        if (workerId) {
+            job.workerId = workerId;
+        }
+        console.log(`Job ${id} status updated to '${status}' workerId: ${job.workerId}`);
         res.json(job);
     } catch (err) {
         console.error("Error updating job status:", err);
@@ -211,11 +213,17 @@ app.patch("/jobs/:id/status", (req, res) => {
     }
 });
 
-// GET /jobs — workers retrieve open jobs, optionally filtered by status
+// GET /jobs — filter by status and/or workerId
 app.get("/jobs", (req, res) => {
     try {
-        const { status } = req.query;
-        const result = status ? jobs.filter(j => j.status === status) : jobs;
+        const { status, workerId } = req.query;
+        let result = jobs;
+        if (status) {
+            result = result.filter(j => j.status === status);
+        }
+        if (workerId) {
+            result = result.filter(j => j.workerId === workerId);
+        }
         res.json(result);
     } catch (err) {
         console.error("Error fetching jobs:", err);
@@ -223,10 +231,8 @@ app.get("/jobs", (req, res) => {
     }
 });
 
-// (Optional) Add other routes like create-connect-account, etc., here
-
 // Start the server
 const PORT = process.env.PORT || 3000;
 app.listen(PORT, () => {
-    console.log(`✅ Server running on port ${PORT}`);
+    console.log(`Server running on port ${PORT}`);
 });
