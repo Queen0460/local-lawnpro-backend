@@ -213,6 +213,81 @@ app.patch("/jobs/:id/status", (req, res) => {
     }
 });
 
+// POST /create-connect-account — create Stripe Connect Express account for worker
+app.post("/create-connect-account", async (req, res) => {
+    try {
+        console.log("[/create-connect-account] incoming body:", JSON.stringify(req.body));
+        const { email, userId } = req.body;
+
+        if (!email || !userId) {
+            return res.status(400).json({ error: 'email and userId are required' });
+        }
+
+        const account = await stripe.accounts.create({
+            type: 'express',
+            email: email,
+            metadata: { userId: String(userId) },
+            capabilities: {
+                card_payments: { requested: true },
+                transfers: { requested: true }
+            }
+        });
+
+        console.log(`[/create-connect-account] success — accountId: ${account.id}`);
+        res.json({ accountId: account.id });
+    } catch (err) {
+        console.error("[/create-connect-account] error:", err.message);
+        console.error("[/create-connect-account] type:", err.type);
+        res.status(500).json({ error: err.message });
+    }
+});
+
+// POST /create-account-link — generate Stripe Connect onboarding link
+app.post("/create-account-link", async (req, res) => {
+    try {
+        console.log("[/create-account-link] incoming body:", JSON.stringify(req.body));
+        const { accountId, refreshUrl, returnUrl } = req.body;
+
+        if (!accountId) {
+            return res.status(400).json({ error: 'accountId is required' });
+        }
+
+        const accountLink = await stripe.accountLinks.create({
+            account: accountId,
+            refresh_url: refreshUrl || 'https://local-lawnpro-backend.onrender.com/onboarding-refresh',
+            return_url: returnUrl || 'https://local-lawnpro-backend.onrender.com/onboarding-return',
+            type: 'account_onboarding'
+        });
+
+        console.log(`[/create-account-link] success — url: ${accountLink.url}`);
+        res.json({ url: accountLink.url });
+    } catch (err) {
+        console.error("[/create-account-link] error:", err.message);
+        res.status(500).json({ error: err.message });
+    }
+});
+
+// POST /check-onboarding-status — check if worker completed Stripe onboarding
+app.post("/check-onboarding-status", async (req, res) => {
+    try {
+        console.log("[/check-onboarding-status] incoming body:", JSON.stringify(req.body));
+        const { accountId } = req.body;
+
+        if (!accountId) {
+            return res.status(400).json({ error: 'accountId is required' });
+        }
+
+        const account = await stripe.accounts.retrieve(accountId);
+        const onboardingComplete = account.details_submitted && account.charges_enabled;
+
+        console.log(`[/check-onboarding-status] accountId: ${accountId} complete: ${onboardingComplete}`);
+        res.json({ onboardingComplete });
+    } catch (err) {
+        console.error("[/check-onboarding-status] error:", err.message);
+        res.status(500).json({ error: err.message });
+    }
+});
+
 // GET /jobs — filter by status and/or workerId
 app.get("/jobs", (req, res) => {
     try {
