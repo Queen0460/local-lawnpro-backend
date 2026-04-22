@@ -215,14 +215,18 @@ app.patch("/jobs/:id/status", (req, res) => {
 
 // POST /create-connect-account — create Stripe Connect Express account for worker
 app.post("/create-connect-account", async (req, res) => {
+    console.log("[/create-connect-account] ROUTE HIT");
+    console.log("[/create-connect-account] req.body:", JSON.stringify(req.body));
     try {
-        console.log("[/create-connect-account] incoming body:", JSON.stringify(req.body));
         const { email, userId } = req.body;
+        console.log(`[/create-connect-account] email: "${email}" userId: "${userId}"`);
 
         if (!email || !userId) {
+            console.log("[/create-connect-account] REJECTED — missing email or userId");
             return res.status(400).json({ error: 'email and userId are required' });
         }
 
+        console.log("[/create-connect-account] calling stripe.accounts.create...");
         const account = await stripe.accounts.create({
             type: 'express',
             email: email,
@@ -233,11 +237,13 @@ app.post("/create-connect-account", async (req, res) => {
             }
         });
 
-        console.log(`[/create-connect-account] success — accountId: ${account.id}`);
+        console.log(`[/create-connect-account] SUCCESS — accountId: ${account.id}`);
         res.json({ accountId: account.id });
     } catch (err) {
-        console.error("[/create-connect-account] error:", err.message);
-        console.error("[/create-connect-account] type:", err.type);
+        console.error("[/create-connect-account] CAUGHT ERROR:", err.message);
+        console.error("[/create-connect-account] error type:", err.type);
+        console.error("[/create-connect-account] error code:", err.code);
+        console.error("[/create-connect-account] full error:", JSON.stringify(err, null, 2));
         res.status(500).json({ error: err.message });
     }
 });
@@ -254,8 +260,8 @@ app.post("/create-account-link", async (req, res) => {
 
         const accountLink = await stripe.accountLinks.create({
             account: accountId,
-            refresh_url: refreshUrl || 'https://local-lawnpro-backend.onrender.com/onboarding-refresh',
-            return_url: returnUrl || 'https://local-lawnpro-backend.onrender.com/onboarding-return',
+            refresh_url: refreshUrl || 'https://locallawnpro.org/reauth',
+            return_url: returnUrl || 'https://locallawnpro.org/onboarding-complete',
             type: 'account_onboarding'
         });
 
