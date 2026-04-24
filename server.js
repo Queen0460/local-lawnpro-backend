@@ -252,16 +252,20 @@ app.post("/create-connect-account", async (req, res) => {
 app.post("/create-account-link", async (req, res) => {
     try {
         console.log("[/create-account-link] incoming body:", JSON.stringify(req.body));
-        const { accountId, refreshUrl, returnUrl } = req.body;
+        const { accountId } = req.body;
 
         if (!accountId) {
             return res.status(400).json({ error: 'accountId is required' });
         }
 
+        const refresh_url = 'https://locallawnpro.org/onboarding-refresh';
+        const return_url = 'https://locallawnpro.org/onboarding-complete';
+        console.log(`[/create-account-link] refresh_url: ${refresh_url} return_url: ${return_url}`);
+
         const accountLink = await stripe.accountLinks.create({
             account: accountId,
-            refresh_url: refreshUrl || 'https://locallawnpro.org/reauth',
-            return_url: returnUrl || 'https://locallawnpro.org/onboarding-complete',
+            refresh_url,
+            return_url,
             type: 'account_onboarding'
         });
 
