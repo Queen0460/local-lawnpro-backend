@@ -180,11 +180,28 @@ app.post("/jobs", (req, res) => {
 
 // PATCH /jobs/:id/status — update job status
 const ALLOWED_STATUSES = ['accepted', 'arrived', 'completed', 'paid'];
+const STATUSES_REQUIRING_ONBOARDING = ['accepted', 'completed'];
 
-app.patch("/jobs/:id/status", (req, res) => {
+// Helper: verify worker's Stripe Connect onboarding is complete
+async function verifyWorkerOnboarding(stripeAccountId) {
+    if (!stripeAccountId) {
+        return { ok: false, reason: 'No stripeAccountId provided' };
+    }
+    const account = await stripe.accounts.retrieve(stripeAccountId);
+    const ok = account.charges_enabled && account.payouts_enabled && account.details_submitted;
+    if (!ok) {
+        return {
+            ok: false,
+            reason: `charges_enabled: ${account.charges_enabled}, payouts_enabled: ${account.payouts_enabled}, details_submitted: ${account.details_submitted}`
+        };
+    }
+    return { ok: true };
+}
+
+app.patch("/jobs/:id/status", async (req, res) => {
     try {
         const { id } = req.params;
-        const { status, workerId } = req.body;
+        const { status, workerId, stripeAccountId } = req.body;
 
         if (!status) {
             return res.status(400).json({ error: 'status is required' });
@@ -194,6 +211,19 @@ app.patch("/jobs/:id/status", (req, res) => {
             return res.status(400).json({
                 error: `Invalid status. Must be one of: ${ALLOWED_STATUSES.join(', ')}`
             });
+        }
+
+        // Require completed Stripe onboarding for accept and complete
+        if (STATUSES_REQUIRING_ONBOARDING.includes(status)) {
+            console.log(`[PATCH /jobs/${id}/status] Checking onboarding for stripeAccountId: ${stripeAccountId}`);
+            const check = await verifyWorkerOnboarding(stripeAccountId);
+            if (!check.ok) {
+                console.log(`[PATCH /jobs/${id}/status] BLOCKED — onboarding incomplete: ${check.reason}`);
+                return res.status(403).json({
+                    error: 'Almost there! Please complete your payout setup to start accepting or completing jobs.'
+                });
+            }
+            console.log(`[PATCH /jobs/${id}/status] Onboarding verified OK`);
         }
 
         const job = jobs.find(j => j.id === id);
