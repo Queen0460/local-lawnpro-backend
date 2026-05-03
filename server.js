@@ -179,7 +179,7 @@ app.post("/jobs", (req, res) => {
 });
 
 // PATCH /jobs/:id/status — update job status
-const ALLOWED_STATUSES = ['accepted', 'arrived', 'completedPendingApproval', 'completed', 'paid'];
+const ALLOWED_STATUSES = ['accepted', 'arrived', 'completed', 'paid'];
 const STATUSES_REQUIRING_ONBOARDING = ['accepted', 'completed'];
 
 // Helper: verify worker's Stripe Connect onboarding is complete
@@ -235,7 +235,26 @@ app.patch("/jobs/:id/status", async (req, res) => {
         if (workerId) {
             job.workerId = workerId;
         }
-        console.log(`Job ${id} status updated to '${status}' workerId: ${job.workerId}`);
+
+        // System-based approval: auto-capture payment when worker marks job completed
+        if (status === 'completed' && job.paymentIntentId) {
+            console.log(`[PATCH /jobs/${id}/status] Auto-capturing payment: ${job.paymentIntentId}`);
+            try {
+                await stripe.paymentIntents.capture(job.paymentIntentId);
+                job.status = 'paid';
+                job.paymentStatus = 'captured';
+                job.completedAt = new Date().toISOString();
+                job.disputeWindowEnds = new Date(Date.now() + 24 * 60 * 60 * 1000).toISOString();
+                console.log(`[PATCH /jobs/${id}/status] Payment captured — job marked as paid, dispute window ends: ${job.disputeWindowEnds}`);
+            } catch (stripeErr) {
+                console.error(`[PATCH /jobs/${id}/status] Stripe capture failed: ${stripeErr.message}`);
+                // Still mark completed even if capture fails — can retry later
+                job.paymentStatus = 'capture_failed';
+                console.log(`[PATCH /jobs/${id}/status] Job marked completed but payment capture failed`);
+            }
+        }
+
+        console.log(`Job ${id} status updated to '${job.status}' workerId: ${job.workerId}`);
         res.json(job);
     } catch (err) {
         console.error("Error updating job status:", err);
@@ -346,12 +365,12 @@ app.get("/jobs", (req, res) => {
     }
 });
 
-// POST /jobs/:id/approve-completion — customer approves completed job and captures payment
-app.post("/jobs/:id/approve-completion", async (req, res) => {
+// POST /jobs/:id/dispute — customer flags an issue within 24-hour dispute window
+app.post("/jobs/:id/dispute", async (req, res) => {
     try {
         const { id } = req.params;
-        const { customerId } = req.body;
-        console.log(`[/jobs/${id}/approve-completion] customerId: ${customerId}`);
+        const { customerId, reason } = req.body;
+        console.log(`[/jobs/${id}/dispute] customerId: ${customerId} reason: ${reason}`);
 
         if (!customerId) {
             return res.status(400).json({ error: 'customerId is required' });
@@ -363,38 +382,26 @@ app.post("/jobs/:id/approve-completion", async (req, res) => {
         }
 
         if (job.customerId !== customerId) {
-            console.log(`[/jobs/${id}/approve-completion] BLOCKED — customerId mismatch: ${customerId} vs ${job.customerId}`);
             return res.status(403).json({ error: 'Unauthorized: you do not own this job' });
         }
 
-        if (job.status !== 'completedPendingApproval') {
-            console.log(`[/jobs/${id}/approve-completion] BLOCKED — status is '${job.status}', expected 'completedPendingApproval'`);
-            return res.status(400).json({ error: `Job is not waiting for approval. Current status: ${job.status}` });
+        if (job.status !== 'paid' && job.status !== 'completed') {
+            return res.status(400).json({ error: `Cannot dispute a job with status: ${job.status}` });
         }
 
-        if (!job.paymentIntentId) {
-            console.log(`[/jobs/${id}/approve-completion] BLOCKED — no paymentIntentId on job`);
-            return res.status(400).json({ error: 'No payment intent associated with this job' });
+        // Check dispute window
+        if (job.disputeWindowEnds && new Date() > new Date(job.disputeWindowEnds)) {
+            console.log(`[/jobs/${id}/dispute] BLOCKED — dispute window closed at ${job.disputeWindowEnds}`);
+            return res.status(400).json({ error: 'Dispute window has closed (24 hours after completion)' });
         }
 
-        // Capture the payment
-        console.log(`[/jobs/${id}/approve-completion] Capturing payment intent: ${job.paymentIntentId}`);
-        try {
-            await stripe.paymentIntents.capture(job.paymentIntentId);
-        } catch (stripeErr) {
-            console.error(`[/jobs/${id}/approve-completion] Stripe capture failed:`, stripeErr.message);
-            return res.status(500).json({
-                error: 'Failed to capture payment',
-                stripeError: stripeErr.message
-            });
-        }
-
-        job.status = 'paid';
-        job.paymentStatus = 'captured';
-        console.log(`[/jobs/${id}/approve-completion] SUCCESS — job marked as paid`);
+        job.disputed = true;
+        job.disputeReason = reason || 'No reason provided';
+        job.disputedAt = new Date().toISOString();
+        console.log(`[/jobs/${id}/dispute] Job flagged for dispute: ${job.disputeReason}`);
         res.json(job);
     } catch (err) {
-        console.error(`[/jobs/${req.params.id}/approve-completion] error:`, err.message);
+        console.error(`[/jobs/${req.params.id}/dispute] error:`, err.message);
         res.status(500).json({ error: err.message });
     }
 });
