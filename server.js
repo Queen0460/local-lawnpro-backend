@@ -4,6 +4,7 @@ require('dotenv').config();
 const express = require("express");
 const app = express();
 const cors = require("cors");
+const bcrypt = require("bcrypt");
 
 // Verify Stripe key is loaded before initializing
 if (!process.env.STRIPE_SECRET_KEY) {
@@ -17,6 +18,90 @@ const stripe = require("stripe")(process.env.STRIPE_SECRET_KEY);
 // Middleware
 app.use(cors());
 app.use(express.json());
+
+// ─── Authentication ─────────────────────────────────────────────────────────
+
+// In-memory user store (resets on server restart)
+const users = [];
+const VALID_ACCOUNT_TYPES = ['customer', 'worker'];
+const SALT_ROUNDS = 10;
+
+// POST /create-account — register a new user
+app.post("/create-account", async (req, res) => {
+    try {
+        const { email, password, accountType } = req.body;
+
+        // Validation
+        if (!email || typeof email !== 'string' || email.trim().length === 0) {
+            return res.status(400).json({ error: 'Email is required' });
+        }
+        if (!password || typeof password !== 'string' || password.length === 0) {
+            return res.status(400).json({ error: 'Password is required' });
+        }
+        if (!accountType || !VALID_ACCOUNT_TYPES.includes(accountType)) {
+            return res.status(400).json({ error: 'accountType must be "customer" or "worker"' });
+        }
+
+        const normalizedEmail = email.trim().toLowerCase();
+
+        // Check for duplicates
+        const existing = users.find(u => u.email === normalizedEmail);
+        if (existing) {
+            return res.status(409).json({ error: 'Account already exists' });
+        }
+
+        // Hash password and store
+        const passwordHash = await bcrypt.hash(password, SALT_ROUNDS);
+        const user = {
+            id: Date.now().toString(),
+            email: normalizedEmail,
+            passwordHash,
+            accountType,
+            createdAt: new Date().toISOString()
+        };
+        users.push(user);
+
+        console.log(`[/create-account] Account created: ${normalizedEmail} (${accountType})`);
+        res.status(201).json({ success: true, accountType: user.accountType });
+    } catch (err) {
+        console.error("[/create-account] error:", err.message);
+        res.status(500).json({ error: 'Failed to create account' });
+    }
+});
+
+// POST /login — authenticate an existing user
+app.post("/login", async (req, res) => {
+    try {
+        const { email, password } = req.body;
+
+        if (!email || typeof email !== 'string' || email.trim().length === 0) {
+            return res.status(400).json({ error: 'Email is required' });
+        }
+        if (!password || typeof password !== 'string' || password.length === 0) {
+            return res.status(400).json({ error: 'Password is required' });
+        }
+
+        const normalizedEmail = email.trim().toLowerCase();
+        const user = users.find(u => u.email === normalizedEmail);
+
+        if (!user) {
+            return res.status(404).json({ error: 'Account not found' });
+        }
+
+        const match = await bcrypt.compare(password, user.passwordHash);
+        if (!match) {
+            return res.status(401).json({ error: 'Incorrect password' });
+        }
+
+        console.log(`[/login] Login success: ${normalizedEmail} (${user.accountType})`);
+        res.json({ success: true, accountType: user.accountType });
+    } catch (err) {
+        console.error("[/login] error:", err.message);
+        res.status(500).json({ error: 'Login failed' });
+    }
+});
+
+// ─── Pricing & Payments ─────────────────────────────────────────────────────
 
 // Pricing helper
 function calculatePricing(basePrice) {
