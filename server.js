@@ -5,6 +5,14 @@ const express = require("express");
 const app = express();
 const cors = require("cors");
 const bcrypt = require("bcrypt");
+const sgMail = require('@sendgrid/mail');
+
+if (process.env.SENDGRID_API_KEY) {
+    sgMail.setApiKey(process.env.SENDGRID_API_KEY);
+    console.log("SendGrid API key loaded");
+} else {
+    console.warn("WARNING: SENDGRID_API_KEY not set — welcome emails will not be sent");
+}
 
 // Verify Stripe key is loaded before initializing
 if (!process.env.STRIPE_SECRET_KEY) {
@@ -25,6 +33,25 @@ app.use(express.json());
 const users = [];
 const VALID_ACCOUNT_TYPES = ['customer', 'worker'];
 const SALT_ROUNDS = 10;
+
+// Send welcome email (fire-and-forget, never blocks account creation)
+function sendWelcomeEmail(email, accountType) {
+    if (!process.env.SENDGRID_API_KEY) return;
+
+    const customerMessage = `Welcome to Local Lawn Pro!\n\nYour account has been created successfully.\n\nAs a customer, you can post outdoor service jobs and connect with local workers in your area.\n\nThank you for joining Local Lawn Pro.`;
+    const workerMessage = `Welcome to Local Lawn Pro!\n\nYour account has been created successfully.\n\nAs a worker, you can find jobs and earn money in your area.\n\nThank you for joining Local Lawn Pro.`;
+
+    const msg = {
+        to: email,
+        from: 'support@locallawnpro.org',
+        subject: 'Welcome to Local Lawn Pro 🌱',
+        text: accountType === 'worker' ? workerMessage : customerMessage
+    };
+
+    sgMail.send(msg)
+        .then(() => console.log(`[sendWelcomeEmail] Sent to ${email}`))
+        .catch((err) => console.error(`[sendWelcomeEmail] Failed for ${email}: ${err.message}`));
+}
 
 // POST /create-account — register a new user
 app.post("/create-account", async (req, res) => {
@@ -60,6 +87,9 @@ app.post("/create-account", async (req, res) => {
             createdAt: new Date().toISOString()
         };
         users.push(user);
+
+        // Fire-and-forget welcome email
+        sendWelcomeEmail(normalizedEmail, accountType);
 
         console.log(`[/create-account] Account created: ${normalizedEmail} (${accountType})`);
         res.status(201).json({ success: true, accountType: user.accountType });
