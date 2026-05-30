@@ -239,7 +239,8 @@ app.post("/jobs", (req, res) => {
             address,
             coordinate,
             customerId,
-            paymentIntentId
+            paymentIntentId,
+            addOns
         } = req.body;
 
         if (!title || !customerId) {
@@ -281,6 +282,7 @@ app.post("/jobs", (req, res) => {
             workerId: null,
             paymentStatus: 'authorized',
             paymentIntentId: paymentIntentId || null,
+            addOns: addOns || [],
             createdAt: new Date().toISOString()
         };
 
