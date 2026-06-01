@@ -5,8 +5,14 @@ const express = require("express");
 const app = express();
 const cors = require("cors");
 const bcrypt = require("bcrypt");
+const mongoose = require("mongoose");
 const sgMail = require('@sendgrid/mail');
 
+// Models
+const User = require('./models/User');
+const Job = require('./models/Job');
+
+// SendGrid setup
 if (process.env.SENDGRID_API_KEY) {
     sgMail.setApiKey(process.env.SENDGRID_API_KEY);
     console.log("SendGrid API key loaded");
@@ -23,14 +29,24 @@ console.log(`Stripe key loaded: ${process.env.STRIPE_SECRET_KEY.slice(0, 14)}...
 
 const stripe = require("stripe")(process.env.STRIPE_SECRET_KEY);
 
+// Connect to MongoDB
+if (!process.env.MONGODB_URI) {
+    console.error("FATAL: MONGODB_URI is not set in environment variables");
+    process.exit(1);
+}
+mongoose.connect(process.env.MONGODB_URI)
+    .then(() => console.log("MongoDB connected"))
+    .catch(err => {
+        console.error("MongoDB connection error:", err.message);
+        process.exit(1);
+    });
+
 // Middleware
 app.use(cors());
 app.use(express.json());
 
 // ─── Authentication ─────────────────────────────────────────────────────────
 
-// In-memory user store (resets on server restart)
-const users = [];
 const VALID_ACCOUNT_TYPES = ['customer', 'worker'];
 const SALT_ROUNDS = 10;
 
@@ -58,7 +74,6 @@ app.post("/create-account", async (req, res) => {
     try {
         const { email, password, accountType } = req.body;
 
-        // Validation
         if (!email || typeof email !== 'string' || email.trim().length === 0) {
             return res.status(400).json({ error: 'Email is required' });
         }
@@ -71,24 +86,18 @@ app.post("/create-account", async (req, res) => {
 
         const normalizedEmail = email.trim().toLowerCase();
 
-        // Check for duplicates
-        const existing = users.find(u => u.email === normalizedEmail);
+        const existing = await User.findOne({ email: normalizedEmail });
         if (existing) {
             return res.status(409).json({ error: 'Account already exists' });
         }
 
-        // Hash password and store
         const passwordHash = await bcrypt.hash(password, SALT_ROUNDS);
-        const user = {
-            id: Date.now().toString(),
+        const user = await User.create({
             email: normalizedEmail,
             passwordHash,
-            accountType,
-            createdAt: new Date().toISOString()
-        };
-        users.push(user);
+            accountType
+        });
 
-        // Fire-and-forget welcome email
         sendWelcomeEmail(normalizedEmail, accountType);
 
         console.log(`[/create-account] Account created: ${normalizedEmail} (${accountType})`);
@@ -112,7 +121,7 @@ app.post("/login", async (req, res) => {
         }
 
         const normalizedEmail = email.trim().toLowerCase();
-        const user = users.find(u => u.email === normalizedEmail);
+        const user = await User.findOne({ email: normalizedEmail });
 
         if (!user) {
             return res.status(404).json({ error: 'Account not found' });
@@ -133,7 +142,6 @@ app.post("/login", async (req, res) => {
 
 // ─── Pricing & Payments ─────────────────────────────────────────────────────
 
-// Pricing helper
 function calculatePricing(basePrice) {
     const base = parseFloat(basePrice);
     const fee = parseFloat((base * 0.10).toFixed(2));
@@ -225,12 +233,10 @@ app.post("/confirm-payment-status", async (req, res) => {
     }
 });
 
-// In-memory job store (resets on server restart)
-let jobs = [];
+// ─── Jobs ────────────────────────────────────────────────────────────────────
 
 // POST /jobs — customer posts a job
-// NOTE: fee and totalPrice are always calculated server-side from basePrice.
-app.post("/jobs", (req, res) => {
+app.post("/jobs", async (req, res) => {
     try {
         const {
             title,
@@ -268,8 +274,7 @@ app.post("/jobs", (req, res) => {
 
         const pricing = calculatePricing(basePrice);
 
-        const job = {
-            id: Date.now().toString(),
+        const job = await Job.create({
             title,
             serviceType: serviceType || null,
             basePrice: pricing.base,
@@ -282,24 +287,48 @@ app.post("/jobs", (req, res) => {
             workerId: null,
             paymentStatus: 'authorized',
             paymentIntentId: paymentIntentId || null,
-            addOns: addOns || [],
-            createdAt: new Date().toISOString()
-        };
+            addOns: addOns || []
+        });
 
-        jobs.push(job);
-        console.log(`Job created: ${job.id} | base: $${pricing.base} fee: $${pricing.fee} total: $${pricing.total}`);
-        res.status(201).json(job);
+        console.log(`Job created: ${job._id} | base: $${pricing.base} fee: $${pricing.fee} total: $${pricing.total}`);
+        res.status(201).json(formatJob(job));
     } catch (err) {
         console.error("Error creating job:", err);
         res.status(500).json({ error: err.message });
     }
 });
 
+// Helper: format job document to match previous API response shape
+function formatJob(job) {
+    const obj = job.toObject ? job.toObject() : job;
+    return {
+        id: obj._id.toString(),
+        title: obj.title,
+        serviceType: obj.serviceType,
+        basePrice: obj.basePrice,
+        fee: obj.fee,
+        totalPrice: obj.totalPrice,
+        status: obj.status,
+        address: obj.address,
+        coordinate: obj.coordinate,
+        customerId: obj.customerId,
+        workerId: obj.workerId,
+        paymentStatus: obj.paymentStatus,
+        paymentIntentId: obj.paymentIntentId,
+        addOns: obj.addOns || [],
+        completedAt: obj.completedAt || null,
+        disputeWindowEnds: obj.disputeWindowEnds || null,
+        disputed: obj.disputed || false,
+        disputeReason: obj.disputeReason || null,
+        disputedAt: obj.disputedAt || null,
+        createdAt: obj.createdAt
+    };
+}
+
 // PATCH /jobs/:id/status — update job status
 const ALLOWED_STATUSES = ['accepted', 'arrived', 'completed', 'paid'];
 const STATUSES_REQUIRING_ONBOARDING = ['accepted', 'completed'];
 
-// Helper: verify worker's Stripe Connect onboarding is complete
 async function verifyWorkerOnboarding(stripeAccountId) {
     if (!stripeAccountId) {
         return { ok: false, reason: 'No stripeAccountId provided' };
@@ -330,7 +359,6 @@ app.patch("/jobs/:id/status", async (req, res) => {
             });
         }
 
-        // Require completed Stripe onboarding for accept and complete
         if (STATUSES_REQUIRING_ONBOARDING.includes(status)) {
             console.log(`[PATCH /jobs/${id}/status] Checking onboarding for stripeAccountId: ${stripeAccountId}`);
             const check = await verifyWorkerOnboarding(stripeAccountId);
@@ -343,7 +371,7 @@ app.patch("/jobs/:id/status", async (req, res) => {
             console.log(`[PATCH /jobs/${id}/status] Onboarding verified OK`);
         }
 
-        const job = jobs.find(j => j.id === id);
+        const job = await Job.findById(id);
         if (!job) {
             return res.status(404).json({ error: `Job ${id} not found` });
         }
@@ -362,22 +390,80 @@ app.patch("/jobs/:id/status", async (req, res) => {
                 job.paymentStatus = 'captured';
                 job.completedAt = new Date().toISOString();
                 job.disputeWindowEnds = new Date(Date.now() + 24 * 60 * 60 * 1000).toISOString();
-                console.log(`[PATCH /jobs/${id}/status] Payment captured — job marked as paid, dispute window ends: ${job.disputeWindowEnds}`);
+                console.log(`[PATCH /jobs/${id}/status] Payment captured — job marked as paid`);
             } catch (stripeErr) {
                 console.error(`[PATCH /jobs/${id}/status] Stripe capture failed: ${stripeErr.message}`);
-                // Still mark completed even if capture fails — can retry later
                 job.paymentStatus = 'capture_failed';
-                console.log(`[PATCH /jobs/${id}/status] Job marked completed but payment capture failed`);
             }
         }
 
+        await job.save();
         console.log(`Job ${id} status updated to '${job.status}' workerId: ${job.workerId}`);
-        res.json(job);
+        res.json(formatJob(job));
     } catch (err) {
         console.error("Error updating job status:", err);
         res.status(500).json({ error: err.message });
     }
 });
+
+// GET /jobs — filter by status and/or workerId
+app.get("/jobs", async (req, res) => {
+    try {
+        const { status, workerId } = req.query;
+        const filter = {};
+        if (status) filter.status = status;
+        if (workerId) filter.workerId = workerId;
+
+        const jobs = await Job.find(filter).sort({ createdAt: -1 });
+        res.json(jobs.map(formatJob));
+    } catch (err) {
+        console.error("Error fetching jobs:", err);
+        res.status(500).json({ error: err.message });
+    }
+});
+
+// POST /jobs/:id/dispute — customer flags an issue within 24-hour dispute window
+app.post("/jobs/:id/dispute", async (req, res) => {
+    try {
+        const { id } = req.params;
+        const { customerId, reason } = req.body;
+        console.log(`[/jobs/${id}/dispute] customerId: ${customerId} reason: ${reason}`);
+
+        if (!customerId) {
+            return res.status(400).json({ error: 'customerId is required' });
+        }
+
+        const job = await Job.findById(id);
+        if (!job) {
+            return res.status(404).json({ error: `Job ${id} not found` });
+        }
+
+        if (job.customerId !== customerId) {
+            return res.status(403).json({ error: 'Unauthorized: you do not own this job' });
+        }
+
+        if (job.status !== 'paid' && job.status !== 'completed') {
+            return res.status(400).json({ error: `Cannot dispute a job with status: ${job.status}` });
+        }
+
+        if (job.disputeWindowEnds && new Date() > new Date(job.disputeWindowEnds)) {
+            return res.status(400).json({ error: 'Dispute window has closed (24 hours after completion)' });
+        }
+
+        job.disputed = true;
+        job.disputeReason = reason || 'No reason provided';
+        job.disputedAt = new Date().toISOString();
+        await job.save();
+
+        console.log(`[/jobs/${id}/dispute] Job flagged for dispute: ${job.disputeReason}`);
+        res.json(formatJob(job));
+    } catch (err) {
+        console.error(`[/jobs/${req.params.id}/dispute] error:`, err.message);
+        res.status(500).json({ error: err.message });
+    }
+});
+
+// ─── Stripe Connect ──────────────────────────────────────────────────────────
 
 // POST /create-connect-account — create Stripe Connect Express account for worker
 app.post("/create-connect-account", async (req, res) => {
@@ -409,7 +495,6 @@ app.post("/create-connect-account", async (req, res) => {
         console.error("[/create-connect-account] CAUGHT ERROR:", err.message);
         console.error("[/create-connect-account] error type:", err.type);
         console.error("[/create-connect-account] error code:", err.code);
-        console.error("[/create-connect-account] full error:", JSON.stringify(err, null, 2));
         res.status(500).json({ error: err.message });
     }
 });
@@ -464,66 +549,8 @@ app.post("/check-onboarding-status", async (req, res) => {
     }
 });
 
-// GET /jobs — filter by status and/or workerId
-app.get("/jobs", (req, res) => {
-    try {
-        const { status, workerId } = req.query;
-        let result = jobs;
-        if (status) {
-            result = result.filter(j => j.status === status);
-        }
-        if (workerId) {
-            result = result.filter(j => j.workerId === workerId);
-        }
-        res.json(result);
-    } catch (err) {
-        console.error("Error fetching jobs:", err);
-        res.status(500).json({ error: err.message });
-    }
-});
+// ─── Start Server ────────────────────────────────────────────────────────────
 
-// POST /jobs/:id/dispute — customer flags an issue within 24-hour dispute window
-app.post("/jobs/:id/dispute", async (req, res) => {
-    try {
-        const { id } = req.params;
-        const { customerId, reason } = req.body;
-        console.log(`[/jobs/${id}/dispute] customerId: ${customerId} reason: ${reason}`);
-
-        if (!customerId) {
-            return res.status(400).json({ error: 'customerId is required' });
-        }
-
-        const job = jobs.find(j => j.id === id);
-        if (!job) {
-            return res.status(404).json({ error: `Job ${id} not found` });
-        }
-
-        if (job.customerId !== customerId) {
-            return res.status(403).json({ error: 'Unauthorized: you do not own this job' });
-        }
-
-        if (job.status !== 'paid' && job.status !== 'completed') {
-            return res.status(400).json({ error: `Cannot dispute a job with status: ${job.status}` });
-        }
-
-        // Check dispute window
-        if (job.disputeWindowEnds && new Date() > new Date(job.disputeWindowEnds)) {
-            console.log(`[/jobs/${id}/dispute] BLOCKED — dispute window closed at ${job.disputeWindowEnds}`);
-            return res.status(400).json({ error: 'Dispute window has closed (24 hours after completion)' });
-        }
-
-        job.disputed = true;
-        job.disputeReason = reason || 'No reason provided';
-        job.disputedAt = new Date().toISOString();
-        console.log(`[/jobs/${id}/dispute] Job flagged for dispute: ${job.disputeReason}`);
-        res.json(job);
-    } catch (err) {
-        console.error(`[/jobs/${req.params.id}/dispute] error:`, err.message);
-        res.status(500).json({ error: err.message });
-    }
-});
-
-// Start the server
 const PORT = process.env.PORT || 3000;
 app.listen(PORT, () => {
     console.log(`Server running on port ${PORT}`);
