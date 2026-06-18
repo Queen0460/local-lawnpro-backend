@@ -140,6 +140,83 @@ app.post("/login", async (req, res) => {
     }
 });
 
+// ─── Account Deletion ────────────────────────────────────────────────────────
+
+// DELETE /delete-account — permanently delete a user account and related data
+app.delete("/delete-account", async (req, res) => {
+    try {
+        const { email } = req.body;
+
+        if (!email || typeof email !== 'string' || email.trim().length === 0) {
+            return res.status(400).json({ error: 'Email is required' });
+        }
+
+        const normalizedEmail = email.trim().toLowerCase();
+        const user = await User.findOne({ email: normalizedEmail });
+
+        if (!user) {
+            return res.status(404).json({ error: 'Account not found' });
+        }
+
+        const userId = user._id.toString();
+
+        // Delete the user account
+        await User.deleteOne({ _id: user._id });
+
+        // Clean up jobs posted by this user (set customerId to deleted)
+        await Job.updateMany({ customerId: userId }, { $set: { customerId: 'deleted_account' } });
+
+        // Remove this user as worker from any assigned jobs
+        await Job.updateMany({ workerId: userId }, { $set: { workerId: null } });
+
+        console.log(`[DELETE /delete-account] Account deleted: ${normalizedEmail} (${user.accountType})`);
+        res.json({ success: true, message: 'Account deleted successfully' });
+    } catch (err) {
+        console.error("[DELETE /delete-account] error:", err.message);
+        res.status(500).json({ error: 'Failed to delete account' });
+    }
+});
+
+// ─── Profile ─────────────────────────────────────────────────────────────────
+
+// PATCH /profile — update user profile (location, travel radius, zip)
+app.patch("/profile", async (req, res) => {
+    try {
+        const { userId, coordinate, travelRadiusMiles, zipCode } = req.body;
+
+        if (!userId) {
+            return res.status(400).json({ error: 'userId is required' });
+        }
+
+        const user = await User.findById(userId);
+        if (!user) {
+            return res.status(404).json({ error: 'User not found' });
+        }
+
+        if (coordinate && typeof coordinate.lat === 'number' && typeof coordinate.lng === 'number') {
+            user.coordinate = { lat: coordinate.lat, lng: coordinate.lng };
+        }
+        if (typeof travelRadiusMiles === 'number' && travelRadiusMiles > 0) {
+            user.travelRadiusMiles = travelRadiusMiles;
+        }
+        if (zipCode && typeof zipCode === 'string') {
+            user.zipCode = zipCode.trim();
+        }
+
+        await user.save();
+        console.log(`[PATCH /profile] Updated user ${userId}: radius=${user.travelRadiusMiles}mi`);
+        res.json({
+            success: true,
+            coordinate: user.coordinate,
+            travelRadiusMiles: user.travelRadiusMiles,
+            zipCode: user.zipCode
+        });
+    } catch (err) {
+        console.error("[PATCH /profile] error:", err.message);
+        res.status(500).json({ error: err.message });
+    }
+});
+
 // ─── Pricing & Payments ─────────────────────────────────────────────────────
 
 function calculatePricing(basePrice) {
@@ -406,15 +483,43 @@ app.patch("/jobs/:id/status", async (req, res) => {
     }
 });
 
-// GET /jobs — filter by status and/or workerId
+// Haversine formula — returns distance in miles between two lat/lng points
+function haversineDistance(lat1, lng1, lat2, lng2) {
+    const toRad = (deg) => deg * (Math.PI / 180);
+    const R = 3958.8; // Earth's radius in miles
+    const dLat = toRad(lat2 - lat1);
+    const dLng = toRad(lng2 - lng1);
+    const a = Math.sin(dLat / 2) ** 2 +
+              Math.cos(toRad(lat1)) * Math.cos(toRad(lat2)) * Math.sin(dLng / 2) ** 2;
+    const c = 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1 - a));
+    return R * c;
+}
+
+// GET /jobs — filter by status, workerId, and optionally by distance
 app.get("/jobs", async (req, res) => {
     try {
-        const { status, workerId } = req.query;
+        const { status, workerId, lat, lng, radiusMiles } = req.query;
         const filter = {};
         if (status) filter.status = status;
         if (workerId) filter.workerId = workerId;
 
-        const jobs = await Job.find(filter).sort({ createdAt: -1 });
+        let jobs = await Job.find(filter).sort({ createdAt: -1 });
+
+        // Optional distance filtering
+        if (lat && lng && radiusMiles) {
+            const workerLat = parseFloat(lat);
+            const workerLng = parseFloat(lng);
+            const radius = parseFloat(radiusMiles);
+
+            if (!isNaN(workerLat) && !isNaN(workerLng) && !isNaN(radius)) {
+                jobs = jobs.filter(job => {
+                    if (!job.coordinate || !job.coordinate.lat || !job.coordinate.lng) return false;
+                    const dist = haversineDistance(workerLat, workerLng, job.coordinate.lat, job.coordinate.lng);
+                    return dist <= radius;
+                });
+            }
+        }
+
         res.json(jobs.map(formatJob));
     } catch (err) {
         console.error("Error fetching jobs:", err);
