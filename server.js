@@ -437,8 +437,16 @@ app.patch("/jobs/:id/status", async (req, res) => {
         }
 
         if (STATUSES_REQUIRING_ONBOARDING.includes(status)) {
-            console.log(`[PATCH /jobs/${id}/status] Checking onboarding for stripeAccountId: ${stripeAccountId}`);
-            const check = await verifyWorkerOnboarding(stripeAccountId);
+            // Look up worker's stripeAccountId from database
+            let accountIdToCheck = stripeAccountId;
+            if (!accountIdToCheck && workerId) {
+                const worker = await User.findById(workerId);
+                if (worker && worker.stripeAccountId) {
+                    accountIdToCheck = worker.stripeAccountId;
+                }
+            }
+            console.log(`[PATCH /jobs/${id}/status] Checking onboarding for stripeAccountId: ${accountIdToCheck}`);
+            const check = await verifyWorkerOnboarding(accountIdToCheck);
             if (!check.ok) {
                 console.log(`[PATCH /jobs/${id}/status] BLOCKED — onboarding incomplete: ${check.reason}`);
                 return res.status(403).json({
@@ -527,6 +535,42 @@ app.get("/jobs", async (req, res) => {
     }
 });
 
+// DELETE /jobs/:id — customer deletes a pending job (only if no worker accepted)
+app.delete("/jobs/:id", async (req, res) => {
+    try {
+        const { id } = req.params;
+        const { customerId } = req.body;
+
+        if (!customerId) {
+            return res.status(400).json({ error: 'customerId is required' });
+        }
+
+        const job = await Job.findById(id);
+        if (!job) {
+            return res.status(404).json({ error: `Job ${id} not found` });
+        }
+
+        if (job.customerId !== customerId) {
+            return res.status(403).json({ error: 'Unauthorized: you do not own this job' });
+        }
+
+        if (job.status !== 'pending') {
+            return res.status(400).json({ error: `Cannot delete job with status '${job.status}'. Only pending jobs can be deleted.` });
+        }
+
+        if (job.workerId) {
+            return res.status(400).json({ error: 'Cannot delete: a worker has already been assigned' });
+        }
+
+        await Job.deleteOne({ _id: job._id });
+        console.log(`[DELETE /jobs/${id}] Job deleted by customer ${customerId}`);
+        res.json({ success: true, message: 'Job deleted successfully' });
+    } catch (err) {
+        console.error(`[DELETE /jobs/${id}] error:`, err.message);
+        res.status(500).json({ error: err.message });
+    }
+});
+
 // POST /jobs/:id/dispute — customer flags an issue within 24-hour dispute window
 app.post("/jobs/:id/dispute", async (req, res) => {
     try {
@@ -583,6 +627,13 @@ app.post("/create-connect-account", async (req, res) => {
             return res.status(400).json({ error: 'email and userId are required' });
         }
 
+        // Check if worker already has a Stripe account
+        const user = await User.findById(userId);
+        if (user && user.stripeAccountId) {
+            console.log(`[/create-connect-account] Worker already has account: ${user.stripeAccountId}`);
+            return res.json({ accountId: user.stripeAccountId });
+        }
+
         console.log("[/create-connect-account] calling stripe.accounts.create...");
         const account = await stripe.accounts.create({
             type: 'express',
@@ -593,6 +644,13 @@ app.post("/create-connect-account", async (req, res) => {
                 transfers: { requested: true }
             }
         });
+
+        // Save stripeAccountId to user record
+        if (user) {
+            user.stripeAccountId = account.id;
+            await user.save();
+            console.log(`[/create-connect-account] Saved ${account.id} to user ${userId}`);
+        }
 
         console.log(`[/create-connect-account] SUCCESS — accountId: ${account.id}`);
         res.json({ accountId: account.id });
@@ -637,19 +695,65 @@ app.post("/create-account-link", async (req, res) => {
 app.post("/check-onboarding-status", async (req, res) => {
     try {
         console.log("[/check-onboarding-status] incoming body:", JSON.stringify(req.body));
-        const { accountId } = req.body;
+        const { accountId, workerId } = req.body;
 
-        if (!accountId) {
-            return res.status(400).json({ error: 'accountId is required' });
+        let stripeId = accountId;
+
+        // If workerId provided, look up stripeAccountId from database
+        if (!stripeId && workerId) {
+            const user = await User.findById(workerId);
+            if (user && user.stripeAccountId) {
+                stripeId = user.stripeAccountId;
+            }
         }
 
-        const account = await stripe.accounts.retrieve(accountId);
-        const onboardingComplete = account.details_submitted && account.charges_enabled;
+        if (!stripeId) {
+            return res.status(400).json({ error: 'accountId or workerId is required' });
+        }
 
-        console.log(`[/check-onboarding-status] accountId: ${accountId} complete: ${onboardingComplete}`);
-        res.json({ onboardingComplete });
+        const account = await stripe.accounts.retrieve(stripeId);
+        const onboardingComplete = account.details_submitted && account.charges_enabled && account.payouts_enabled;
+
+        console.log(`[/check-onboarding-status] accountId: ${stripeId} complete: ${onboardingComplete}`);
+        res.json({ onboardingComplete, accountId: stripeId });
     } catch (err) {
         console.error("[/check-onboarding-status] error:", err.message);
+        res.status(500).json({ error: err.message });
+    }
+});
+
+// DELETE /jobs/:id — customer can delete a pending job (no worker assigned yet)
+app.delete("/jobs/:id", async (req, res) => {
+    try {
+        const { id } = req.params;
+        const { customerId } = req.body;
+
+        if (!customerId) {
+            return res.status(400).json({ error: 'customerId is required' });
+        }
+
+        const job = await Job.findById(id);
+        if (!job) {
+            return res.status(404).json({ error: `Job ${id} not found` });
+        }
+
+        if (job.customerId !== customerId) {
+            return res.status(403).json({ error: 'Unauthorized: you do not own this job' });
+        }
+
+        if (job.status !== 'pending') {
+            return res.status(400).json({ error: `Cannot delete job with status '${job.status}'. Only pending jobs can be deleted.` });
+        }
+
+        if (job.workerId) {
+            return res.status(400).json({ error: 'Cannot delete a job that has been accepted by a worker' });
+        }
+
+        await Job.deleteOne({ _id: job._id });
+        console.log(`[DELETE /jobs/${id}] Job deleted by customer ${customerId}`);
+        res.json({ success: true, message: 'Job deleted successfully' });
+    } catch (err) {
+        console.error(`[DELETE /jobs/${req.params.id}] error:`, err.message);
         res.status(500).json({ error: err.message });
     }
 });
