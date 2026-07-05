@@ -449,16 +449,16 @@ app.patch("/jobs/:id/status", async (req, res) => {
                 // Try MongoDB ObjectId first, then email-based lookup
                 let worker = null;
                 if (workerId.match(/^[0-9a-fA-F]{24}$/)) {
-                    worker = await User.findById(workerId);
+                    worker = await User.findById(workerId).lean();
                 }
                 // iOS sends workerId as "work-email@example.com" — extract email
                 if (!worker && workerId.startsWith('work-')) {
                     const email = workerId.replace(/^work-/, '').toLowerCase();
-                    worker = await User.findOne({ email });
+                    worker = await User.findOne({ email }).lean();
                 }
                 // Fallback: try finding by email directly
                 if (!worker) {
-                    worker = await User.findOne({ email: workerId.toLowerCase() });
+                    worker = await User.findOne({ email: workerId.toLowerCase() }).lean();
                 }
                 if (worker && worker.stripeAccountId) {
                     accountIdToCheck = worker.stripeAccountId;
@@ -736,11 +736,11 @@ app.post("/check-onboarding-status", async (req, res) => {
         // If workerId provided, look up stripeAccountId from database
         if (!stripeId && workerId) {
             if (workerId.match(/^[0-9a-fA-F]{24}$/)) {
-                foundUser = await User.findById(workerId);
+                foundUser = await User.findById(workerId).lean();
             }
             if (!foundUser && workerId.startsWith('work-')) {
                 const extractedEmail = workerId.replace(/^work-/, '').toLowerCase();
-                foundUser = await User.findOne({ email: extractedEmail });
+                foundUser = await User.findOne({ email: extractedEmail }).lean();
             }
             if (foundUser && foundUser.stripeAccountId) {
                 stripeId = foundUser.stripeAccountId;
@@ -749,7 +749,7 @@ app.post("/check-onboarding-status", async (req, res) => {
 
         // If email provided, look up by email
         if (!stripeId && email) {
-            foundUser = await User.findOne({ email: email.trim().toLowerCase() });
+            foundUser = await User.findOne({ email: email.trim().toLowerCase() }).lean();
             if (foundUser && foundUser.stripeAccountId) {
                 stripeId = foundUser.stripeAccountId;
             }
