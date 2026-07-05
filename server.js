@@ -695,13 +695,21 @@ app.post("/create-account-link", async (req, res) => {
 app.post("/check-onboarding-status", async (req, res) => {
     try {
         console.log("[/check-onboarding-status] incoming body:", JSON.stringify(req.body));
-        const { accountId, workerId } = req.body;
+        const { accountId, workerId, email } = req.body;
 
         let stripeId = accountId;
 
         // If workerId provided, look up stripeAccountId from database
         if (!stripeId && workerId) {
             const user = await User.findById(workerId);
+            if (user && user.stripeAccountId) {
+                stripeId = user.stripeAccountId;
+            }
+        }
+
+        // If email provided, look up by email
+        if (!stripeId && email) {
+            const user = await User.findOne({ email: email.trim().toLowerCase() });
             if (user && user.stripeAccountId) {
                 stripeId = user.stripeAccountId;
             }
