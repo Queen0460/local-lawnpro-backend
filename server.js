@@ -411,6 +411,12 @@ async function verifyWorkerOnboarding(stripeAccountId) {
         return { ok: false, reason: 'No stripeAccountId provided' };
     }
     const account = await stripe.accounts.retrieve(stripeAccountId);
+    console.log(`[verifyWorkerOnboarding] accountId: ${stripeAccountId}`);
+    console.log(`[verifyWorkerOnboarding] charges_enabled: ${account.charges_enabled}`);
+    console.log(`[verifyWorkerOnboarding] payouts_enabled: ${account.payouts_enabled}`);
+    console.log(`[verifyWorkerOnboarding] details_submitted: ${account.details_submitted}`);
+    console.log(`[verifyWorkerOnboarding] requirements.currently_due: ${JSON.stringify(account.requirements?.currently_due || [])}`);
+    console.log(`[verifyWorkerOnboarding] requirements.disabled_reason: ${account.requirements?.disabled_reason || 'none'}`);
     const ok = account.charges_enabled && account.payouts_enabled && account.details_submitted;
     if (!ok) {
         return {
