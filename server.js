@@ -890,7 +890,7 @@ app.post("/admin/cleanup-test-jobs", async (req, res) => {
     try {
         const { adminSecret, jobId } = req.body;
 
-        if (!adminSecret || adminSecret !== process.env.ADMIN_SECRET) {
+        if (!adminSecret || adminSecret.trim() !== process.env.ADMIN_SECRET.trim()) {
             return res.status(401).json({ error: 'Unauthorized' });
         }
 
