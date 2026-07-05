@@ -825,13 +825,16 @@ app.delete("/jobs/:id", async (req, res) => {
 app.get("/debug/user/:email", async (req, res) => {
     try {
         const email = req.params.email.trim().toLowerCase();
-        const user = await User.findOne({ email });
+        // Use native driver to read raw document
+        const db = require('mongoose').connection.db;
+        const user = await db.collection('users').findOne({ email });
         if (!user) return res.status(404).json({ error: 'User not found', email });
         res.json({
             _id: user._id,
             email: user.email,
             accountType: user.accountType,
-            stripeAccountId: user.stripeAccountId || null
+            stripeAccountId: user.stripeAccountId || null,
+            _raw_keys: Object.keys(user)
         });
     } catch (err) {
         res.status(500).json({ error: err.message });
