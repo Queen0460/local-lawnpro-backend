@@ -821,6 +821,23 @@ app.delete("/jobs/:id", async (req, res) => {
 
 // ─── Start Server ────────────────────────────────────────────────────────────
 
+// TEMP DEBUG — remove before production
+app.get("/debug/user/:email", async (req, res) => {
+    try {
+        const email = req.params.email.trim().toLowerCase();
+        const user = await User.findOne({ email });
+        if (!user) return res.status(404).json({ error: 'User not found', email });
+        res.json({
+            _id: user._id,
+            email: user.email,
+            accountType: user.accountType,
+            stripeAccountId: user.stripeAccountId || null
+        });
+    } catch (err) {
+        res.status(500).json({ error: err.message });
+    }
+});
+
 const PORT = process.env.PORT || 3000;
 app.listen(PORT, () => {
     console.log(`Server running on port ${PORT}`);
