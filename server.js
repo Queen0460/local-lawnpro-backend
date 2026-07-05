@@ -821,6 +821,20 @@ app.delete("/jobs/:id", async (req, res) => {
 
 // ─── Start Server ────────────────────────────────────────────────────────────
 
+// Health check — confirms env vars are loaded (never exposes values)
+app.get("/health", (req, res) => {
+    res.json({
+        status: "ok",
+        envVars: {
+            STRIPE_SECRET_KEY: !!process.env.STRIPE_SECRET_KEY,
+            MONGODB_URI: !!process.env.MONGODB_URI,
+            ADMIN_SECRET: !!process.env.ADMIN_SECRET,
+            ADMIN_SECRET_LENGTH: process.env.ADMIN_SECRET ? process.env.ADMIN_SECRET.length : 0,
+            SENDGRID_API_KEY: !!process.env.SENDGRID_API_KEY
+        }
+    });
+});
+
 // TEMP DEBUG — remove before production
 app.get("/debug/user/:email", async (req, res) => {
     try {
