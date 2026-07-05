@@ -647,8 +647,21 @@ app.post("/create-connect-account", async (req, res) => {
             return res.status(400).json({ error: 'email and userId are required' });
         }
 
+        // Look up user — try ObjectId first, then email-based patterns
+        let user = null;
+        if (userId.match(/^[0-9a-fA-F]{24}$/)) {
+            user = await User.findById(userId);
+        }
+        if (!user && userId.startsWith('work-')) {
+            const extractedEmail = userId.replace(/^work-/, '').toLowerCase();
+            user = await User.findOne({ email: extractedEmail });
+        }
+        if (!user) {
+            user = await User.findOne({ email: email.trim().toLowerCase() });
+        }
+        console.log(`[/create-connect-account] User lookup: found=${!!user} _id=${user?._id}`);
+
         // Check if worker already has a Stripe account
-        const user = await User.findById(userId);
         if (user && user.stripeAccountId) {
             console.log(`[/create-connect-account] Worker already has account: ${user.stripeAccountId}`);
             return res.json({ accountId: user.stripeAccountId });
@@ -718,29 +731,52 @@ app.post("/check-onboarding-status", async (req, res) => {
         const { accountId, workerId, email } = req.body;
 
         let stripeId = accountId;
+        let foundUser = null;
 
         // If workerId provided, look up stripeAccountId from database
         if (!stripeId && workerId) {
-            const user = await User.findById(workerId);
-            if (user && user.stripeAccountId) {
-                stripeId = user.stripeAccountId;
+            if (workerId.match(/^[0-9a-fA-F]{24}$/)) {
+                foundUser = await User.findById(workerId);
+            }
+            if (!foundUser && workerId.startsWith('work-')) {
+                const extractedEmail = workerId.replace(/^work-/, '').toLowerCase();
+                foundUser = await User.findOne({ email: extractedEmail });
+            }
+            if (foundUser && foundUser.stripeAccountId) {
+                stripeId = foundUser.stripeAccountId;
             }
         }
 
         // If email provided, look up by email
         if (!stripeId && email) {
-            const user = await User.findOne({ email: email.trim().toLowerCase() });
-            if (user && user.stripeAccountId) {
-                stripeId = user.stripeAccountId;
+            foundUser = await User.findOne({ email: email.trim().toLowerCase() });
+            if (foundUser && foundUser.stripeAccountId) {
+                stripeId = foundUser.stripeAccountId;
             }
         }
 
         if (!stripeId) {
-            return res.status(400).json({ error: 'accountId or workerId is required' });
+            return res.status(400).json({ error: 'accountId or workerId is required, or worker has no Stripe account linked' });
         }
 
         const account = await stripe.accounts.retrieve(stripeId);
         const onboardingComplete = account.details_submitted && account.charges_enabled && account.payouts_enabled;
+
+        // Auto-save stripeAccountId to user record if missing (fixes data gap)
+        if (foundUser && !foundUser.stripeAccountId) {
+            foundUser.stripeAccountId = stripeId;
+            await foundUser.save();
+            console.log(`[/check-onboarding-status] Auto-saved stripeAccountId ${stripeId} to user ${foundUser.email}`);
+        }
+        // If we have accountId but found user via email/workerId without it saved
+        if (!foundUser && email) {
+            const userByEmail = await User.findOne({ email: email.trim().toLowerCase() });
+            if (userByEmail && !userByEmail.stripeAccountId) {
+                userByEmail.stripeAccountId = stripeId;
+                await userByEmail.save();
+                console.log(`[/check-onboarding-status] Auto-saved stripeAccountId ${stripeId} to user ${userByEmail.email} (via email fallback)`);
+            }
+        }
 
         console.log(`[/check-onboarding-status] accountId: ${stripeId} complete: ${onboardingComplete}`);
         res.json({ onboardingComplete, accountId: stripeId });
