@@ -843,13 +843,21 @@ app.post("/debug/link-stripe", async (req, res) => {
     try {
         const { email, stripeAccountId } = req.body;
         if (!email || !stripeAccountId) return res.status(400).json({ error: 'email and stripeAccountId required' });
-        const result = await User.findOneAndUpdate(
+        
+        // Use native MongoDB driver to bypass any Mongoose schema issues
+        const db = require('mongoose').connection.db;
+        const result = await db.collection('users').findOneAndUpdate(
             { email: email.trim().toLowerCase() },
             { $set: { stripeAccountId: stripeAccountId } },
-            { new: true }
+            { returnDocument: 'after' }
         );
         if (!result) return res.status(404).json({ error: 'User not found' });
-        res.json({ success: true, email: result.email, stripeAccountId: result.stripeAccountId });
+        res.json({ 
+            success: true, 
+            email: result.email, 
+            stripeAccountId: result.stripeAccountId,
+            allFields: Object.keys(result)
+        });
     } catch (err) {
         res.status(500).json({ error: err.message });
     }
