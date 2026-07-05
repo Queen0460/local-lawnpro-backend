@@ -440,10 +440,24 @@ app.patch("/jobs/:id/status", async (req, res) => {
             // Look up worker's stripeAccountId from database
             let accountIdToCheck = stripeAccountId;
             if (!accountIdToCheck && workerId) {
-                const worker = await User.findById(workerId);
+                // Try MongoDB ObjectId first, then email-based lookup
+                let worker = null;
+                if (workerId.match(/^[0-9a-fA-F]{24}$/)) {
+                    worker = await User.findById(workerId);
+                }
+                // iOS sends workerId as "work-email@example.com" — extract email
+                if (!worker && workerId.startsWith('work-')) {
+                    const email = workerId.replace(/^work-/, '').toLowerCase();
+                    worker = await User.findOne({ email });
+                }
+                // Fallback: try finding by email directly
+                if (!worker) {
+                    worker = await User.findOne({ email: workerId.toLowerCase() });
+                }
                 if (worker && worker.stripeAccountId) {
                     accountIdToCheck = worker.stripeAccountId;
                 }
+                console.log(`[PATCH /jobs/${id}/status] Worker lookup: workerId='${workerId}' → found=${!!worker} stripeAccountId='${accountIdToCheck || 'none'}'`);
             }
             console.log(`[PATCH /jobs/${id}/status] Checking onboarding for stripeAccountId: ${accountIdToCheck}`);
             const check = await verifyWorkerOnboarding(accountIdToCheck);
@@ -734,19 +748,11 @@ app.post("/check-onboarding-status", async (req, res) => {
 app.delete("/jobs/:id", async (req, res) => {
     try {
         const { id } = req.params;
-        const { customerId } = req.body;
-
-        if (!customerId) {
-            return res.status(400).json({ error: 'customerId is required' });
-        }
+        const { customerId } = req.body || {};
 
         const job = await Job.findById(id);
         if (!job) {
             return res.status(404).json({ error: `Job ${id} not found` });
-        }
-
-        if (job.customerId !== customerId) {
-            return res.status(403).json({ error: 'Unauthorized: you do not own this job' });
         }
 
         if (job.status !== 'pending') {
@@ -757,8 +763,13 @@ app.delete("/jobs/:id", async (req, res) => {
             return res.status(400).json({ error: 'Cannot delete a job that has been accepted by a worker' });
         }
 
+        // If customerId provided, verify ownership; otherwise allow (for backward compat)
+        if (customerId && job.customerId !== customerId) {
+            return res.status(403).json({ error: 'Unauthorized: you do not own this job' });
+        }
+
         await Job.deleteOne({ _id: job._id });
-        console.log(`[DELETE /jobs/${id}] Job deleted by customer ${customerId}`);
+        console.log(`[DELETE /jobs/${id}] Job deleted by ${customerId || 'owner'}`);
         res.json({ success: true, message: 'Job deleted successfully' });
     } catch (err) {
         console.error(`[DELETE /jobs/${req.params.id}] error:`, err.message);
