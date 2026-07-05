@@ -843,11 +843,13 @@ app.post("/debug/link-stripe", async (req, res) => {
     try {
         const { email, stripeAccountId } = req.body;
         if (!email || !stripeAccountId) return res.status(400).json({ error: 'email and stripeAccountId required' });
-        const user = await User.findOne({ email: email.trim().toLowerCase() });
-        if (!user) return res.status(404).json({ error: 'User not found' });
-        user.stripeAccountId = stripeAccountId;
-        await user.save();
-        res.json({ success: true, email: user.email, stripeAccountId: user.stripeAccountId });
+        const result = await User.findOneAndUpdate(
+            { email: email.trim().toLowerCase() },
+            { $set: { stripeAccountId: stripeAccountId } },
+            { new: true }
+        );
+        if (!result) return res.status(404).json({ error: 'User not found' });
+        res.json({ success: true, email: result.email, stripeAccountId: result.stripeAccountId });
     } catch (err) {
         res.status(500).json({ error: err.message });
     }
