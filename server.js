@@ -866,6 +866,47 @@ app.post("/debug/link-stripe", async (req, res) => {
     }
 });
 
+// POST /admin/cleanup-test-jobs — delete test/demo jobs only (protected by admin secret)
+const DEMO_ACCOUNTS = [
+    'cust-democustomer@locallawnpro.org',
+    'work-demoworker@locallawnpro.org'
+];
+
+app.post("/admin/cleanup-test-jobs", async (req, res) => {
+    try {
+        const { adminSecret, jobId } = req.body;
+
+        if (!adminSecret || adminSecret !== process.env.ADMIN_SECRET) {
+            return res.status(401).json({ error: 'Unauthorized' });
+        }
+
+        // If specific jobId provided, delete only that job (must belong to demo account)
+        if (jobId) {
+            const job = await Job.findById(jobId);
+            if (!job) return res.status(404).json({ error: 'Job not found' });
+            if (!DEMO_ACCOUNTS.includes(job.customerId) && !DEMO_ACCOUNTS.includes(job.workerId)) {
+                return res.status(403).json({ error: 'Cannot delete — job does not belong to a demo account' });
+            }
+            await Job.deleteOne({ _id: job._id });
+            console.log(`[admin/cleanup] Deleted test job ${jobId}`);
+            return res.json({ success: true, deleted: 1, jobId });
+        }
+
+        // No jobId — delete ALL jobs belonging to demo accounts
+        const result = await Job.deleteMany({
+            $or: [
+                { customerId: { $in: DEMO_ACCOUNTS } },
+                { workerId: { $in: DEMO_ACCOUNTS } }
+            ]
+        });
+        console.log(`[admin/cleanup] Deleted ${result.deletedCount} test jobs`);
+        res.json({ success: true, deleted: result.deletedCount });
+    } catch (err) {
+        console.error("[admin/cleanup] error:", err.message);
+        res.status(500).json({ error: err.message });
+    }
+});
+
 const PORT = process.env.PORT || 3000;
 app.listen(PORT, () => {
     console.log(`Server running on port ${PORT}`);
